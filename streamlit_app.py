@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Найдвартай, хөнгөн Loader-ууд (Installing error гаргадаггүй)
+# Найдвартай Loader-ууд
 from langchain_community.document_loaders import (
     Docx2txtLoader,
     PyPDFLoader,
@@ -21,19 +21,31 @@ from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
 # ==============================
+# API KEY SAFETY CLEANER
+# ==============================
+def get_safe_secret(key):
+    """API Key-д байж болох Unicode тэмдэгтүүдийг цэвэрлэж ASCII болгоно."""
+    val = st.secrets.get(key)
+    if val:
+        # Аливаа үл үзэгдэх Unicode тэмдэгтүүдийг устгаж ASCII болгох
+        return str(val).encode("ascii", "ignore").decode("ascii").strip()
+    return None
+
+# ==============================
 # ENV & CONFIG
 # ==============================
 load_dotenv()
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
-google_api_key = st.secrets.get("GOOGLE_API_KEY")
-pinecone_api_key = st.secrets.get("PINECONE_API_KEY")
-openai_api_key = st.secrets.get("OPENAI_API_KEY")
+# API түлхүүрүүдийг аюулгүйгээр авах
+google_api_key = get_safe_secret("GOOGLE_API_KEY")
+pinecone_api_key = get_safe_secret("PINECONE_API_KEY")
+openai_api_key = get_safe_secret("OPENAI_API_KEY")
 
 index_name = "centralai-v2" 
 
 if not google_api_key or not pinecone_api_key or not openai_api_key:
-    st.error("❌ API keys are missing in Streamlit Secrets!")
+    st.error("❌ API keys are missing in Streamlit Secrets! Secrets хэсгээ шалгана уу.")
     st.stop()
 
 # ==============================
@@ -53,7 +65,7 @@ def clean_text(text):
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
-    # Зөвхөн уншигдах боломжтой тэмдэгтүүдийг үлдээх (Монгол үсэг орно)
+    # Монгол үсгийг оролцуулан хэвлэгдэх боломжтой тэмдэгтүүдийг үлдээх
     return "".join(c for c in text if unicodedata.category(c)[0] != 'C' or c in '\n\r\t')
 
 # ==============================
@@ -61,21 +73,28 @@ def clean_text(text):
 # ==============================
 @st.cache_resource
 def init_models():
+    # OpenAI Embedding (1536 dim)
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         openai_api_key=openai_api_key
     )
+    
+    # Pinecone Client
     pc = Pinecone(api_key=pinecone_api_key)
     
-    # Индекс байхгүй бол үүсгэх (OpenAI-д зориулж 1536 dimension)
-    existing_indexes = [i["name"] for i in pc.list_indexes()]
-    if index_name not in existing_indexes:
-        pc.create_index(
-            name=index_name,
-            dimension=1536,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1")
-        )
+    # Индекс шалгах / үүсгэх
+    try:
+        existing_indexes = [i["name"] for i in pc.list_indexes()]
+        if index_name not in existing_indexes:
+            pc.create_index(
+                name=index_name,
+                dimension=1536,
+                metric="cosine",
+                spec=ServerlessSpec(cloud="aws", region="us-east-1")
+            )
+    except Exception as e:
+        st.error(f"Pinecone Index Error: {str(e)}")
+        
     return embeddings
 
 embeddings = init_models()
@@ -135,64 +154,8 @@ with st.sidebar:
                 splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
                 chunks = splitter.split_documents(all_docs)
                 
-                vectorstore = PineconeVectorStore(
-                    index_name=index_name,
-                    embedding=embeddings,
-                    pinecone_api_key=pinecone_api_key
-                )
-                
-                # Багцаар нь Pinecone-руу илгээх
-                batch_size = 100
-                for i in range(0, len(chunks), batch_size):
-                    batch = chunks[i:i+batch_size]
-                    vectorstore.add_documents(batch)
-                
-                st.success(f"✅ Амжилттай! {len(chunks)} хэсэг мэдээлэл хадгалагдлаа.")
-
-# ==============================
-# CHAT INTERFACE
-# ==============================
-query = st.text_input("Асуултаа бичнэ үү:", placeholder="Мэдээллийн сангаас хайх...")
-
-if query:
-    with st.spinner("AI хариулт бэлдэж байна..."):
-        try:
-            vectorstore = PineconeVectorStore(
-                index_name=index_name,
-                embedding=embeddings,
-                pinecone_api_key=pinecone_api_key
-            )
-            
-            # Хамгийн ойр 5 илэрцийг хайх
-            results = vectorstore.similarity_search(query, k=5)
-            
-            if not results:
-                st.warning("⚠️ Холбогдох мэдээлэл олдсонгүй.")
-            else:
-                context_text = "\n\n".join([doc.page_content for doc in results])
-                
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
-                    google_api_key=google_api_key,
-                    temperature=0.1
-                )
-                
-                prompt = f"""
-                Та бол Central Test компанийн туслах AI. 
-                Доорх мэдээлэлд тулгуурлан асуултанд монгол хэлээр маш тодорхой хариул.
-                Хариулт байхгүй бол 'Мэдээлэл алга байна' гэж хэлээрэй.
-
-                Мэдээлэл: {context_text}
-                Асуулт: {query}
-                """
-                
-                response = llm.invoke(prompt)
-                st.markdown("### 🤖 Хариулт:")
-                st.write(response.content)
-                
-                with st.expander("Эх сурвалж харах"):
-                    for doc in results:
-                        st.info(f"File: {doc.metadata.get('source')}\n\n{doc.page_content}")
-        
-        except Exception as e:
-            st.error(f"❌ Алдаа гарлаа: {str(e)}")
+                try:
+                    # Pinecone-д холбогдох
+                    vectorstore = PineconeVectorStore(
+                        index_name=index_name,
+                        embedding=embeddings,
