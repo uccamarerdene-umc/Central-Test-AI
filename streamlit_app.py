@@ -3,18 +3,12 @@ import streamlit as st
 import os
 import unicodedata
 from uuid import uuid4
-
 from dotenv import load_dotenv
+
+# LangChain & AI сангууд
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
-
-# Найдвартай Loader-ууд
-from langchain_community.document_loaders import (
-    Docx2txtLoader,
-    PyPDFLoader,
-    TextLoader
-)
-
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 from langchain_core.documents import Document as LCDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
@@ -27,7 +21,7 @@ def get_safe_secret(key):
     """API Key-д байж болох Unicode тэмдэгтүүдийг цэвэрлэж ASCII болгоно."""
     val = st.secrets.get(key)
     if val:
-        # Аливаа үл үзэгдэх Unicode тэмдэгтүүдийг устгаж ASCII болгох
+        # Аливаа үл үзэгдэх Unicode тэмдэгт, зайг устгаж ASCII болгох
         return str(val).encode("ascii", "ignore").decode("ascii").strip()
     return None
 
@@ -54,7 +48,7 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
 def clean_text(text):
     if not text:
         return ""
-    # Юникод тэмдэгтүүдийг хэвийн болгох
+    # Юникод тэмдэгтүүдийг хэвийн болгох (Монгол үсэгт асуудалгүй)
     text = unicodedata.normalize("NFKC", text)
     # ASCII-д алдаа заадаг тусгай тэмдэгтүүдийг гараар солих
     replacements = {
@@ -65,7 +59,6 @@ def clean_text(text):
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
-    # Монгол үсгийг оролцуулан хэвлэгдэх боломжтой тэмдэгтүүдийг үлдээх
     return "".join(c for c in text if unicodedata.category(c)[0] != 'C' or c in '\n\r\t')
 
 # ==============================
@@ -73,7 +66,7 @@ def clean_text(text):
 # ==============================
 @st.cache_resource
 def init_models():
-    # OpenAI Embedding (1536 dim)
+    # OpenAI Embedding
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         openai_api_key=openai_api_key
@@ -82,7 +75,7 @@ def init_models():
     # Pinecone Client
     pc = Pinecone(api_key=pinecone_api_key)
     
-    # Индекс шалгах / үүсгэх
+    # Индекс байгаа эсэхийг шалгах, байхгүй бол үүсгэх
     try:
         existing_indexes = [i["name"] for i in pc.list_indexes()]
         if index_name not in existing_indexes:
@@ -133,7 +126,6 @@ def load_all_documents():
                     for d in raw_docs:
                         d.page_content = clean_text(d.page_content)
                         docs.append(d)
-                        
             except Exception as e:
                 st.warning(f"⚠️ Алдаа гарлаа ({file}): {str(e)}")
     return docs
@@ -159,3 +151,57 @@ with st.sidebar:
                     vectorstore = PineconeVectorStore(
                         index_name=index_name,
                         embedding=embeddings,
+                        pinecone_api_key=pinecone_api_key
+                    )
+                    
+                    # Датаг Pinecone руу оруулах
+                    vectorstore.add_documents(chunks)
+                    st.success(f"✅ Амжилттай! {len(chunks)} хэсэг мэдээлэл хадгалагдлаа.")
+                except Exception as e:
+                    st.error(f"Sync Error: {str(e)}")
+
+# ==============================
+# CHAT INTERFACE
+# ==============================
+query = st.text_input("Асуултаа бичнэ үү:", placeholder="Мэдээллийн сангаас хайх...")
+
+if query:
+    with st.spinner("AI хариулт бэлдэж байна..."):
+        try:
+            vectorstore = PineconeVectorStore(
+                index_name=index_name,
+                embedding=embeddings,
+                pinecone_api_key=pinecone_api_key
+            )
+            
+            results = vectorstore.similarity_search(query, k=5)
+            
+            if not results:
+                st.warning("⚠️ Холбогдох мэдээлэл олдсонгүй.")
+            else:
+                context_text = "\n\n".join([doc.page_content for doc in results])
+                
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    google_api_key=google_api_key,
+                    temperature=0.1
+                )
+                
+                prompt = f"""
+                Та бол Central Test компанийн туслах AI. 
+                Доорх мэдээлэлд тулгуурлан асуултанд монгол хэлээр маш тодорхой хариул.
+                Хариулт байхгүй бол 'Мэдээлэл алга байна' гэж хэлээрэй.
+
+                Мэдээлэл: {context_text}
+                Асуулт: {query}
+                """
+                
+                response = llm.invoke(prompt)
+                st.markdown("### 🤖 Хариулт:")
+                st.write(response.content)
+                
+                with st.expander("Эх сурвалж харах"):
+                    for doc in results:
+                        st.info(f"File: {doc.metadata.get('source')}\n\n{doc.page_content}")
+        except Exception as e:
+            st.error(f"❌ Алдаа гарлаа: {str(e)}")
