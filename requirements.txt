@@ -8,6 +8,6 @@ langchain-pinecone==0.1.1
 langchain-text-splitters
 pinecone-client==4.1.0
 python-dotenv
-unstructured[docx]
 python-docx
 docx2txt
+pypdf
