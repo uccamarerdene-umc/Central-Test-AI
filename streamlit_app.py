@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-MULTI FILE LOADER
+# 🔥 MULTI FILE LOADER
 from langchain_community.document_loaders import (
     Docx2txtLoader,
     PyPDFLoader,
@@ -16,7 +16,7 @@ from langchain_community.document_loaders import (
     DirectoryLoader
 )
 
-STABLE SPLITTER (NO SPACY)
+# ✅ STABLE SPLITTER (NO SPACY)
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from langchain_pinecone import PineconeVectorStore
