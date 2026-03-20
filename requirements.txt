@@ -5,6 +5,7 @@ langchain-core
 langchain-openai
 langchain-google-genai
 langchain-pinecone
+langchain-text-splitters
 pinecone-client
 python-dotenv
 unstructured[docx]
