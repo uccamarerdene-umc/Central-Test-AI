@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import unicodedata
+from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -41,13 +42,14 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
 # ==============================
 def clean_text(text):
     if not isinstance(text, str):
-        return text
+        return str(text)
     text = unicodedata.normalize("NFKC", text)
-    text = text.replace("—", "-")  # 🔥 fix em dash
-    return text.encode("utf-8", "ignore").decode("utf-8")
+    text = text.replace("—", "-")
+    text = text.encode("utf-8", "ignore").decode("utf-8")
+    return text
 
 # ==============================
-# 3. LOAD ALL FILE TYPES
+# 3. LOAD FILES
 # ==============================
 def load_all_documents():
     docs = []
@@ -75,7 +77,7 @@ def load_all_documents():
     return docs
 
 # ==============================
-# 4. LOAD MODELS
+# 4. MODELS
 # ==============================
 @st.cache_resource
 def load_models():
@@ -92,10 +94,7 @@ def load_models():
             name=index_name,
             dimension=dimension,
             metric="cosine",
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
-            )
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
 
     return embeddings
@@ -103,7 +102,7 @@ def load_models():
 embeddings = load_models()
 
 # ==============================
-# 5. SIDEBAR SYNC
+# 5. SYNC (🔥 FIXED)
 # ==============================
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -127,38 +126,50 @@ with st.sidebar:
 
                         texts = splitter.split_documents(docs)
 
-                        # 🔥 FULL CLEAN (CONTENT + METADATA)
-                        for doc in texts:
-                            # content
-                            doc.page_content = clean_text(doc.page_content)
-
-                            # metadata (🔥 ЭНЭ Л АСУУДЛЫН ГОЛ)
-                            if doc.metadata:
-                                new_meta = {}
-                                for k, v in doc.metadata.items():
-                                    new_meta[clean_text(k)] = clean_text(v)
-                                doc.metadata = new_meta
-
-                        PineconeVectorStore.from_documents(
-                            documents=texts,
-                            embedding=embeddings,
+                        vectorstore = PineconeVectorStore(
                             index_name=index_name,
+                            embedding=embeddings,
                             pinecone_api_key=pinecone_api_key
                         )
 
-                        st.success(f"✅ {len(texts)} chunk хадгалагдлаа")
+                        safe_texts = []
+                        metadatas = []
+                        ids = []
+
+                        for doc in texts:
+                            content = clean_text(doc.page_content)
+
+                            # 🔥 ASCII SAFE
+                            content = content.encode("ascii", "ignore").decode()
+
+                            meta = {}
+                            if doc.metadata:
+                                for k, v in doc.metadata.items():
+                                    meta[clean_text(k)] = clean_text(v)
+
+                            safe_texts.append(content)
+                            metadatas.append(meta)
+                            ids.append(str(uuid4()))
+
+                        vectorstore.add_texts(
+                            texts=safe_texts,
+                            metadatas=metadatas,
+                            ids=ids
+                        )
+
+                        st.success(f"✅ {len(safe_texts)} chunk хадгалагдлаа")
 
                 except Exception as e:
                     st.error(f"❌ Sync алдаа: {str(e)}")
 
 # ==============================
-# 6. QUERY OPTIMIZATION
+# 6. QUERY
 # ==============================
 def enhance_query(query):
-    return f"Монгол хэл дээр ойлгомжтой хайлтын асуулт: {query}"
+    return f"Монгол хэл дээр ойлгомжтой хайлт: {query}"
 
 # ==============================
-# 7. CHAT UI
+# 7. CHAT
 # ==============================
 st.title("🤖 Central Test AI Assistant")
 
@@ -192,7 +203,7 @@ if query:
                 prompt = f"""
 Та бол Central Test AI Assistant.
 
-Та зөвхөн өгөгдсөн мэдээлэлд үндэслэн Монгол хэл дээр товч, тодорхой хариул.
+Зөвхөн өгөгдсөн мэдээлэлд үндэслэн хариул.
 
 Хэрэв мэдээлэл байхгүй бол:
 "Мэдээлэл хангалтгүй байна"
