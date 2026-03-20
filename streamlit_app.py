@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import os
 import unicodedata
@@ -9,7 +10,6 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langchain_community.document_loaders import (
-    Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
     UnstructuredPowerPointLoader
@@ -19,6 +19,9 @@ from langchain.schema import Document as LCDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
+
+# 🔥 DOCX SAFE
+from docx import Document
 
 # ==============================
 # ENV
@@ -37,71 +40,87 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
     st.stop()
 
 # ==============================
-# CLEAN TEXT (Updated for safer encoding)
+# CLEAN TEXT (UTF-8 SAFE)
 # ==============================
 def clean_text(text):
     if not isinstance(text, str):
-        return str(text)
-    
-    # Монгол үсэг болон тусгай тэмдэгтүүдийг UTF-8 хэвээр үлдээж цэвэрлэх
+        text = str(text)
+
     text = unicodedata.normalize("NFKC", text)
-    # ASCII-д байхгүй урт зураасыг энгийн зураасаар солих
-    text = text.replace("\u2013", "-").replace("\u2014", "-")
+
+    replacements = {
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2026": "...",
+        "\u00a0": " ",
+    }
+
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+
     return text
 
 # ==============================
-# SAFE DOCX LOADER
+# SAFE DOCX LOADER (🔥 FIXED)
 # ==============================
 def load_docx_safe(file_path):
     try:
-        # Docx2txtLoader нь заримдаа дотооддоо ascii ашиглах гээд байдаг тул 
-        # try-except дотор текстээ clean хийх нь зөв
-        loader = Docx2txtLoader(file_path)
-        docs = loader.load()
+        doc = Document(file_path)
+        text = "\n".join([p.text for p in doc.paragraphs])
 
-        safe_docs = []
-        for d in docs:
-            safe_text = clean_text(d.page_content)
-            safe_docs.append(
-                LCDocument(
-                    page_content=safe_text,
-                    metadata={"source": file_path}
-                )
+        return [
+            LCDocument(
+                page_content=clean_text(text),
+                metadata={"source": file_path}
             )
-        return safe_docs
+        ]
     except Exception as e:
         st.warning(f"⚠️ DOCX алдаа: {file_path} → {e}")
         return []
 
 # ==============================
-# LOAD ALL DOCUMENTS
+# LOAD FILES
 # ==============================
 def load_all_documents():
     docs = []
+
     if not os.path.exists("data"):
-        return []
+        return docs
 
     for root, _, files in os.walk("data"):
         for file in files:
             path = os.path.join(root, file)
+
             try:
                 if file.endswith(".docx"):
                     docs.extend(load_docx_safe(path))
+
                 elif file.endswith(".pdf"):
-                    loaded_pdf = PyPDFLoader(path).load()
-                    for p in loaded_pdf:
-                        p.page_content = clean_text(p.page_content)
-                    docs.extend(loaded_pdf)
+                    pdf_docs = PyPDFLoader(path).load()
+                    for d in pdf_docs:
+                        d.page_content = clean_text(d.page_content)
+                    docs.extend(pdf_docs)
+
                 elif file.endswith(".txt"):
-                    # TXT файлыг заавал UTF-8-оор унших
-                    docs.extend(TextLoader(path, encoding="utf-8").load())
+                    txt_docs = TextLoader(path, encoding="utf-8").load()
+                    for d in txt_docs:
+                        d.page_content = clean_text(d.page_content)
+                    docs.extend(txt_docs)
+
                 elif file.endswith(".pptx"):
-                    loaded_pptx = UnstructuredPowerPointLoader(path).load()
-                    for p in loaded_pptx:
-                        p.page_content = clean_text(p.page_content)
-                    docs.extend(loaded_pptx)
+                    ppt_docs = UnstructuredPowerPointLoader(path).load()
+                    for d in ppt_docs:
+                        d.page_content = clean_text(d.page_content)
+                    docs.extend(ppt_docs)
+
             except Exception as e:
                 st.warning(f"⚠️ Алдаа ({file}): {e}")
+
     return docs
 
 # ==============================
@@ -113,9 +132,9 @@ def load_models():
         model="text-embedding-3-small",
         openai_api_key=openai_api_key,
     )
+
     pc = Pinecone(api_key=pinecone_api_key)
-    
-    # Index шалгах
+
     indexes = [i["name"] for i in pc.list_indexes()]
     if index_name not in indexes:
         pc.create_index(
@@ -124,12 +143,13 @@ def load_models():
             metric="cosine",
             spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
+
     return embeddings
 
 embeddings = load_models()
 
 # ==============================
-# SIDEBAR SYNC
+# SYNC
 # ==============================
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -140,52 +160,58 @@ with st.sidebar:
         else:
             with st.spinner("📤 Sync хийж байна..."):
                 try:
-                    all_docs = load_all_documents()
-                    
-                    if not all_docs:
-                        st.warning("⚠️ Хавтсанд тохирох файл алга.")
-                    else:
-                        splitter = RecursiveCharacterTextSplitter(
-                            chunk_size=500,
-                            chunk_overlap=120
-                        )
-                        texts = splitter.split_documents(all_docs)
+                    docs = load_all_documents()
 
-                        # Pinecone-д холбогдох
-                        vectorstore = PineconeVectorStore(
-                            index_name=index_name,
-                            embedding=embeddings,
-                            pinecone_api_key=pinecone_api_key
-                        )
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=500,
+                        chunk_overlap=120
+                    )
 
-                        safe_contents = []
-                        metadatas = []
+                    texts = splitter.split_documents(docs)
+
+                    vectorstore = PineconeVectorStore(
+                        index_name=index_name,
+                        embedding=embeddings,
+                        pinecone_api_key=pinecone_api_key
+                    )
+
+                    batch_size = 100
+
+                    for i in range(0, len(texts), batch_size):
+                        batch = texts[i:i+batch_size]
+
+                        contents = []
+                        metas = []
                         ids = []
 
-                        for doc in texts:
+                        for doc in batch:
                             content = clean_text(doc.page_content)
-                            source = clean_text(doc.metadata.get("source", "unknown"))
-                            
-                            safe_contents.append(content)
-                            metadatas.append({"source": source})
+                            if not content.strip():
+                                continue
+
+                            contents.append(content)
+                            metas.append({
+                                "source": clean_text(doc.metadata.get("source", "unknown"))
+                            })
                             ids.append(str(uuid4()))
 
-                        # Багцаар нь нэмэх
-                        vectorstore.add_texts(
-                            texts=safe_contents,
-                            metadatas=metadatas,
-                            ids=ids
-                        )
-                        st.success(f"✅ {len(safe_contents)} хэсэг хадгалагдлаа")
+                        if contents:
+                            vectorstore.add_texts(
+                                texts=contents,
+                                metadatas=metas,
+                                ids=ids
+                            )
+
+                    st.success(f"✅ {len(texts)} chunk хадгалагдлаа")
 
                 except Exception as e:
-                    # Энд гарч байсан ASCII алдааг clean_text барих ёстой
                     st.error(f"❌ Sync алдаа: {str(e)}")
 
 # ==============================
-# CHAT UI
+# CHAT
 # ==============================
 st.title("🤖 Central Test AI Assistant")
+
 query = st.text_input("Асуултаа бичнэ үү:")
 
 if query:
@@ -202,7 +228,10 @@ if query:
             if not results:
                 st.warning("⚠️ Мэдээлэл олдсонгүй")
             else:
-                context = "\n\n".join([clean_text(doc.page_content) for doc in results])
+                context = "\n\n".join([
+                    clean_text(doc.page_content[:1000])
+                    for doc in results
+                ])
 
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-1.5-flash",
@@ -210,12 +239,16 @@ if query:
                     temperature=0.2
                 )
 
-                prompt = f"""Та бол Central Test AI Assistant. Доорх мэдээлэлд үндэслэн хариул:
-                {context}
-                Асуулт: {query}"""
+                response = llm.invoke(f"""
+Доорх мэдээлэлд үндэслэн хариул:
 
-                response = llm.invoke(prompt)
+{context}
+
+Асуулт: {query}
+""")
+
                 st.markdown("### 🤖 Хариулт:")
                 st.write(response.content)
+
         except Exception as e:
             st.error(f"❌ Алдаа: {str(e)}")
