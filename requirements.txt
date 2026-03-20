@@ -6,8 +6,7 @@ langchain-openai
 langchain-google-genai
 langchain-pinecone==0.1.1
 langchain-text-splitters
-pinecone-client==4.1.0
+pinecone-client==5.0.1
 python-dotenv
-python-docx
 docx2txt
 pypdf
