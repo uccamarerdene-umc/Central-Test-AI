@@ -1,25 +1,33 @@
 import streamlit as st
 import os
+import unicodedata
 
 from dotenv import load_dotenv
+
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.document_loaders import Docx2txtLoader, DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter  # ✅ FIX
-from langchain_pinecone import PineconeVectorStore
 
+MULTI FILE LOADER
+from langchain_community.document_loaders import (
+    Docx2txtLoader,
+    PyPDFLoader,
+    TextLoader,
+    UnstructuredPowerPointLoader,
+    DirectoryLoader
+)
+
+STABLE SPLITTER (NO SPACY)
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
 # ==============================
-# 1. ENV LOAD
+# 1. ENV
 # ==============================
 load_dotenv()
-
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
-# ==============================
-# 2. API KEYS
-# ==============================
 google_api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
 pinecone_api_key = st.secrets.get("PINECONE_API_KEY", os.getenv("PINECONE_API_KEY"))
 openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
@@ -32,7 +40,39 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
     st.stop()
 
 # ==============================
-# 3. LOAD MODELS
+# 2. TEXT CLEAN (🔥 MONGOLIAN SAFE)
+# ==============================
+def clean_text(text):
+    text = unicodedata.normalize("NFKC", text)
+    return text.encode("utf-8", "ignore").decode("utf-8")
+
+# ==============================
+# 3. LOAD ALL FILE TYPES
+# ==============================
+def load_all_documents():
+    docs = []
+
+    loaders = [
+        ("data", "**/*.docx", Docx2txtLoader),
+        ("data", "**/*.pdf", PyPDFLoader),
+        ("data", "**/*.txt", TextLoader),
+        ("data", "**/*.pptx", UnstructuredPowerPointLoader),
+    ]
+
+    for path, pattern, loader_cls in loaders:
+        if os.path.exists(path):
+            loader = DirectoryLoader(
+                path,
+                glob=pattern,
+                loader_cls=loader_cls,
+                show_progress=True
+            )
+            docs.extend(loader.load())
+
+    return docs
+
+# ==============================
+# 4. LOAD MODELS
 # ==============================
 @st.cache_resource
 def load_models():
@@ -43,7 +83,6 @@ def load_models():
 
     pc = Pinecone(api_key=pinecone_api_key)
 
-    # Index check
     existing_indexes = [i["name"] for i in pc.list_indexes()]
     if index_name not in existing_indexes:
         pc.create_index(
@@ -56,12 +95,12 @@ def load_models():
             )
         )
 
-    return embeddings, pc
+    return embeddings
 
-embeddings, pc = load_models()
+embeddings = load_models()
 
 # ==============================
-# 4. SIDEBAR - SYNC
+# 5. SIDEBAR SYNC
 # ==============================
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -72,21 +111,23 @@ with st.sidebar:
         else:
             with st.spinner("📤 Sync хийж байна..."):
                 try:
-                    loader = DirectoryLoader(
-                        "data",
-                        glob="**/*.docx",
-                        loader_cls=Docx2txtLoader
-                    )
-                    docs = loader.load()
+                    docs = load_all_documents()
 
                     if not docs:
-                        st.warning("⚠️ docx файл олдсонгүй")
+                        st.warning("⚠️ файл олдсонгүй")
                     else:
+                        # 🔥 Монгол optimized chunking
                         splitter = RecursiveCharacterTextSplitter(
-                            chunk_size=800,
-                            chunk_overlap=150
+                            chunk_size=500,
+                            chunk_overlap=120,
+                            separators=["\n\n", "\n", ".", "!", "?", " "]
                         )
+
                         texts = splitter.split_documents(docs)
+
+                        # 🔥 CLEAN TEXT
+                        for doc in texts:
+                            doc.page_content = clean_text(doc.page_content)
 
                         PineconeVectorStore.from_documents(
                             documents=texts,
@@ -101,7 +142,17 @@ with st.sidebar:
                     st.error(f"❌ Sync алдаа: {str(e)}")
 
 # ==============================
-# 5. CHAT UI
+# 6. QUERY OPTIMIZATION
+# ==============================
+def enhance_query(query):
+    return f"""
+Дараах асуултыг ойлгомжтой утгаар хайлт хийхэд ашиглана:
+
+{query}
+"""
+
+# ==============================
+# 7. CHAT UI
 # ==============================
 st.title("🤖 Central Test AI Assistant")
 
@@ -116,12 +167,17 @@ if query:
                 pinecone_api_key=pinecone_api_key
             )
 
-            results = vectorstore.similarity_search(query, k=5)
+            enhanced_query = enhance_query(query)
+
+            results = vectorstore.similarity_search(enhanced_query, k=5)
 
             if not results:
                 st.warning("⚠️ Мэдээлэл олдсонгүй")
             else:
-                context = "\n\n".join([doc.page_content for doc in results])
+                context = "\n\n".join([
+                    doc.page_content[:1000]
+                    for doc in results
+                ])
 
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-1.5-flash",
@@ -132,8 +188,10 @@ if query:
                 prompt = f"""
 Та бол Central Test AI Assistant.
 
-Доорх мэдээлэлд үндэслэн хариул.
-Хэрэв байхгүй бол: "Мэдээлэл хангалтгүй байна"
+Та зөвхөн өгөгдсөн мэдээлэлд үндэслэн Монгол хэл дээр товч, тодорхой хариул.
+
+Хэрэв мэдээлэл байхгүй бол:
+"Мэдээлэл хангалтгүй байна" гэж хариул.
 
 --- МЭДЭЭЛЭЛ ---
 {context}
