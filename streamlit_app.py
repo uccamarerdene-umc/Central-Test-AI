@@ -77,7 +77,7 @@ with st.sidebar:
             with st.spinner("📤 Pinecone-д өгөгдөл илгээж байна..."):
                 try:
                     loader = DirectoryLoader(
-                        "Data",
+                        "data",
                         glob="**/*.docx",
                         loader_cls=Docx2txtLoader
                     )
