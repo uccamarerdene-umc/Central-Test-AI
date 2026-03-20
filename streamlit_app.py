@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.document_loaders import DirectoryLoader, Docx2txtLoader
+from langchain_community.document_loaders import UnstructuredWordDocumentLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 
@@ -76,10 +76,10 @@ with st.sidebar:
         else:
             with st.spinner("📤 Pinecone-д өгөгдөл илгээж байна..."):
                 try:
-                    loader = DirectoryLoader(
+                    loader = Unstructured(
                         "data",
                         glob="**/*.docx",
-                        loader_cls=Docx2txtLoader
+                        loader_cls=UnstructuredWordDocumentLoader
                     )
                     docs = loader.load()
 
