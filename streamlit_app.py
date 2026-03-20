@@ -71,7 +71,7 @@ with st.sidebar:
     st.header("⚙️ Settings")
 
     if st.button("🔄 Sync Data to Pinecone"):
-        if not os.path.exists("Data"):
+        if not os.path.exists("data"):
             st.error("❌ 'Data' хавтас олдсонгүй!")
         else:
             with st.spinner("📤 Pinecone-д өгөгдөл илгээж байна..."):
