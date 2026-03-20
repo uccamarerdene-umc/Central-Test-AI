@@ -22,7 +22,7 @@ from langchain_community.document_loaders import (
 )
 
 from langchain_core.documents import Document as LCDocument
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
