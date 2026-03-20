@@ -32,9 +32,11 @@ load_dotenv()
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
 # API түлхүүрүүдийг аюулгүйгээр авах
-google_api_key = get_safe_secret("GOOGLE_API_KEY")
-pinecone_api_key = get_safe_secret("PINECONE_API_KEY")
-openai_api_key = get_safe_secret("OPENAI_API_KEY")
+google_api_key = get_safe_secret("pcsk_65ZC2g_4k2eyNb9EAaAQ4g3rfFdHFKqbTDmKRGMxfgTV5NLLjaTYBFiK154icTn4ggGXaM ")
+pinecone_api_key = get_safe_secret("pcsk_j4q1W_HiF9S5VcCgEQ2tN47YhdBuAjMjWeKYMSoXG2WXMtaka1UTcnjw2nmHnW1weVwKB ")
+openai_api_key = get_safe_secret("sk-proj—G3gvVpcPGTRn7VrLeuTgEbw6N6MT0Ub7KX_ur6jyFwRWPuGInbEdLeSz3e_lr0FibBdBGjmm3T3BlbkFJNCfw0AdCpuIpF4x7CJIl77yYDPIKsT8eKO27jMKkTLQek87G3b4Jf693rKhmdwezOkB2ECjUYA 
+
+ ")
 
 index_name = "centralai-v2" 
 
