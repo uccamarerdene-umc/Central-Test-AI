@@ -3,19 +3,14 @@ import streamlit as st
 import os
 import unicodedata
 from uuid import uuid4
-import sys
-
-# 🔥 Системийн default encoding-ийг UTF-8 болгох (Чухал!)
-import importlib
-importlib.reload(sys)
 
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Илүү найдвартай Loader-ууд
+# Найдвартай, хөнгөн Loader-ууд
 from langchain_community.document_loaders import (
-    UnstructuredWordDocumentLoader,
+    Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
     UnstructuredPowerPointLoader
@@ -32,15 +27,16 @@ from pinecone import Pinecone, ServerlessSpec
 load_dotenv()
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
+# API Keys
 google_api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
 pinecone_api_key = st.secrets.get("PINECONE_API_KEY", os.getenv("PINECONE_API_KEY"))
 openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-# Индексийн нэр (OpenAI text-embedding-3-small бол 1536 dimension)
+# Index name (OpenAI text-embedding-3-small = 1536 dimensions)
 index_name = "centralai-v2" 
 
 if not google_api_key or not pinecone_api_key or not openai_api_key:
-    st.error("❌ API keys are missing! Check your secrets.")
+    st.error("❌ API keys are missing! Please check Streamlit Secrets.")
     st.stop()
 
 # ==============================
@@ -49,88 +45,32 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
 def clean_text(text):
     if not text:
         return ""
-    # Юникод тэмдэгтүүдийг хэвийн болгох
+    # Юникод тэмдэгтүүдийг хэвийн болгох (NFKC)
     text = unicodedata.normalize("NFKC", text)
-    # ASCII-р алдаа заадаг тэмдэгтүүдийг аюулгүй хэлбэрт шилжүүлэх
-    text = text.replace('\u2013', '-').replace('\u2014', '-').replace('\u2019', "'").replace('\u201c', '"').replace('\u201d', '"')
-    # Текст доторх "сонин" тэмдэгтүүдийг цэвэрлэх боловч монгол үсгийг үлдээх
+    # ASCII алдаа үүсгэдэг тусгай тэмдэгтүүдийг солих
+    replacements = {
+        '\u2013': '-', '\u2014': '-', 
+        '\u2018': "'", '\u2019': "'", 
+        '\u201c': '"', '\u201d': '"',
+        '\u00a0': ' '
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    # Монгол үсэг болон стандарт тэмдэгтүүдийг үлдээх
     return "".join(c for c in text if unicodedata.category(c)[0] != 'C' or c in '\n\r\t')
-
-# ==============================
-# DOCX LOADER (MONGOLIAN SAFE)
-# ==============================
-def load_docx_safe(file_path):
-    try:
-        # Unstructured нь монгол хэл болон тусгай тэмдэгт дээр илүү сайн
-        loader = UnstructuredWordDocumentLoader(file_path, mode="elements")
-        docs = loader.load()
-        
-        safe_docs = []
-        for d in docs:
-            cleaned_content = clean_text(d.page_content)
-            if cleaned_content.strip():
-                safe_docs.append(
-                    LCDocument(
-                        page_content=cleaned_content,
-                        metadata={"source": os.path.basename(file_path)}
-                    )
-                )
-        return safe_docs
-    except Exception as e:
-        st.warning(f"⚠️ Docx Error ({os.path.basename(file_path)}): {str(e)}")
-        return []
-
-# ==============================
-# LOAD ALL FILES
-# ==============================
-def load_all_documents():
-    docs = []
-    data_dir = "data"
-    if not os.path.exists(data_dir):
-        return docs
-
-    for root, _, files in os.walk(data_dir):
-        for file in files:
-            path = os.path.join(root, file)
-            try:
-                if file.endswith(".docx"):
-                    docs.extend(load_docx_safe(path))
-                elif file.endswith(".pdf"):
-                    loader = PyPDFLoader(path)
-                    pdf_docs = loader.load()
-                    for d in pdf_docs:
-                        d.page_content = clean_text(d.page_content)
-                    docs.extend(pdf_docs)
-                elif file.endswith(".txt"):
-                    loader = TextLoader(path, encoding="utf-8")
-                    txt_docs = loader.load()
-                    for d in txt_docs:
-                        d.page_content = clean_text(d.page_content)
-                    docs.extend(txt_docs)
-                elif file.endswith(".pptx"):
-                    loader = UnstructuredPowerPointLoader(path)
-                    ppt_docs = loader.load()
-                    for d in ppt_docs:
-                        d.page_content = clean_text(d.page_content)
-                    docs.extend(ppt_docs)
-            except Exception as e:
-                st.warning(f"⚠️ Skip file {file}: {str(e)}")
-    return docs
 
 # ==============================
 # MODELS
 # ==============================
 @st.cache_resource
 def init_models():
-    # OpenAI Embedding (1536 dims)
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         openai_api_key=openai_api_key
     )
-    
     pc = Pinecone(api_key=pinecone_api_key)
     
-    # Индекс байхгүй бол үүсгэх
+    # Индекс байхгүй бол үүсгэх (Dimension 1536)
     existing_indexes = [i["name"] for i in pc.list_indexes()]
     if index_name not in existing_indexes:
         pc.create_index(
@@ -144,31 +84,66 @@ def init_models():
 embeddings = init_models()
 
 # ==============================
+# DATA LOADING
+# ==============================
+def load_all_documents():
+    docs = []
+    data_dir = "data"
+    if not os.path.exists(data_dir):
+        return docs
+
+    for root, _, files in os.walk(data_dir):
+        for file in files:
+            path = os.path.join(root, file)
+            try:
+                if file.endswith(".docx"):
+                    loader = Docx2txtLoader(path)
+                    raw_docs = loader.load()
+                    for d in raw_docs:
+                        content = clean_text(d.page_content)
+                        if content.strip():
+                            docs.append(LCDocument(page_content=content, metadata={"source": file}))
+                
+                elif file.endswith(".pdf"):
+                    loader = PyPDFLoader(path)
+                    raw_docs = loader.load()
+                    for d in raw_docs:
+                        d.page_content = clean_text(d.page_content)
+                        docs.append(d)
+                
+                elif file.endswith(".txt"):
+                    loader = TextLoader(path, encoding="utf-8")
+                    raw_docs = loader.load()
+                    for d in raw_docs:
+                        d.page_content = clean_text(d.page_content)
+                        docs.append(d)
+                        
+            except Exception as e:
+                st.warning(f"⚠️ Алдаа ({file}): {str(e)}")
+    return docs
+
+# ==============================
 # SIDEBAR SYNC
 # ==============================
 with st.sidebar:
     st.header("⚙️ Data Management")
     if st.button("🔄 Sync Documents to Pinecone"):
-        with st.spinner("Processing documents..."):
+        with st.spinner("Processing..."):
             all_docs = load_all_documents()
             if not all_docs:
-                st.error("❌ 'data' хавтас хоосон эсвэл файл олдсонгүй.")
+                st.error("❌ Файл олдсонгүй.")
             else:
-                splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=700,
-                    chunk_overlap=150
-                )
+                splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=150)
                 chunks = splitter.split_documents(all_docs)
                 
-                # Pinecone Store
                 vectorstore = PineconeVectorStore(
                     index_name=index_name,
                     embedding=embeddings,
                     pinecone_api_key=pinecone_api_key
                 )
                 
-                # Багцаар нь оруулах (Batching)
-                batch_size = 50
+                # Batch upload
+                batch_size = 80
                 for i in range(0, len(chunks), batch_size):
                     batch = chunks[i:i+batch_size]
                     vectorstore.add_documents(batch)
@@ -178,12 +153,12 @@ with st.sidebar:
 # ==============================
 # CHAT INTERFACE
 # ==============================
-st.title("🤖 Central Test Knowledge Bot")
+st.title("🤖 Central Test AI Assistant")
 
-query = st.text_input("Асуултаа бичнэ үү:", placeholder="Central Test-ийн талаар асуух...")
+query = st.text_input("Асуултаа бичнэ үү:", placeholder="Мэдээллийн сангаас хайх...")
 
 if query:
-    with st.spinner("Хариулт бэлдэж байна..."):
+    with st.spinner("AI хариулт бэлдэж байна..."):
         try:
             vectorstore = PineconeVectorStore(
                 index_name=index_name,
@@ -191,7 +166,7 @@ if query:
                 pinecone_api_key=pinecone_api_key
             )
             
-            # Semantic Search
+            # Semantic search
             search_results = vectorstore.similarity_search(query, k=5)
             
             if not search_results:
@@ -208,7 +183,7 @@ if query:
                 prompt = f"""
                 Та бол Central Test компанийн туслах AI байна. 
                 Доорх мэдээлэлд (Context) тулгуурлан асуултанд монгол хэлээр маш тодорхой хариул.
-                Хэрэв мэдээлэл дотор хариулт байхгүй бол өөрөө зохиож хариулж болохгүй.
+                Хариулт мэдээлэл дотор байхгүй бол 'Мэдээлэл алга байна' гэж хэлнэ үү.
 
                 Мэдээлэл:
                 {context_text}
@@ -217,13 +192,12 @@ if query:
                 """
                 
                 response = llm.invoke(prompt)
-                
                 st.markdown("### 🤖 Хариулт:")
                 st.write(response.content)
                 
-                with st.expander("Ашигласан эх сурвалж (Context)"):
+                with st.expander("Эх сурвалж харах"):
                     for doc in search_results:
                         st.info(f"Source: {doc.metadata.get('source')}\n\n{doc.page_content}")
         
         except Exception as e:
-            st.error(f"❌ Алдаа гарлаа: {str(e)}")
+            st.error(f"❌ Алдаа: {str(e)}")
