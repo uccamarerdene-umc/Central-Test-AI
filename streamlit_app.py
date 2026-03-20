@@ -5,33 +5,30 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import Docx2txtLoader, DirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter  # ✅ FIX
 from langchain_pinecone import PineconeVectorStore
 
 from pinecone import Pinecone, ServerlessSpec
 
-# Load local `.env` for dev (Streamlit secrets will still take priority).
+# ==============================
+# 1. ENV LOAD
+# ==============================
 load_dotenv()
 
-# ==============================
-# 1. APP CONFIG
-# ==============================
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
-# Prefer Streamlit secrets; fallback to environment variables (for local runs).
+# ==============================
+# 2. API KEYS
+# ==============================
 google_api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
 pinecone_api_key = st.secrets.get("PINECONE_API_KEY", os.getenv("PINECONE_API_KEY"))
 openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-# NOTE: `text-embedding-3-small` dimension is 1536.
 index_name = "centralai-embed-3-small"
-dimension = 1536  # embedding хэмжээ
+dimension = 1536
 
-# ==============================
-# 2. CHECK API KEYS
-# ==============================
 if not google_api_key or not pinecone_api_key or not openai_api_key:
-    st.error("❌ API түлхүүрүүд тохируулагдаагүй байна! (GOOGLE_API_KEY, OPENAI_API_KEY, PINECONE_API_KEY шалгана уу)")
+    st.error("❌ API түлхүүр дутуу байна!")
     st.stop()
 
 # ==============================
@@ -39,7 +36,6 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
 # ==============================
 @st.cache_resource
 def load_models():
-    # OpenAI embeddings: `text-embedding-3-small`
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         openai_api_key=openai_api_key,
@@ -47,7 +43,7 @@ def load_models():
 
     pc = Pinecone(api_key=pinecone_api_key)
 
-    # Index байгаа эсэх шалгах
+    # Index check
     existing_indexes = [i["name"] for i in pc.list_indexes()]
     if index_name not in existing_indexes:
         pc.create_index(
@@ -65,18 +61,17 @@ def load_models():
 embeddings, pc = load_models()
 
 # ==============================
-# 4. SIDEBAR - SYNC DATA
+# 4. SIDEBAR - SYNC
 # ==============================
 with st.sidebar:
     st.header("⚙️ Settings")
 
     if st.button("🔄 Sync Data to Pinecone"):
         if not os.path.exists("data"):
-            st.error("❌ 'data' хавтас олдсонгүй!")
+            st.error("❌ data хавтас олдсонгүй")
         else:
-            with st.spinner("📤 Pinecone-д өгөгдөл илгээж байна..."):
+            with st.spinner("📤 Sync хийж байна..."):
                 try:
-                    # Уншигч (Loader) - Docx2txt ашигласан нь хамгийн тогтвортой
                     loader = DirectoryLoader(
                         "data",
                         glob="**/*.docx",
@@ -85,16 +80,14 @@ with st.sidebar:
                     docs = loader.load()
 
                     if not docs:
-                        st.warning("⚠️ .docx файл олдсонгүй.")
+                        st.warning("⚠️ docx файл олдсонгүй")
                     else:
-                        # Текст хуваагч (Chunking)
                         splitter = RecursiveCharacterTextSplitter(
                             chunk_size=800,
                             chunk_overlap=150
                         )
                         texts = splitter.split_documents(docs)
 
-                        # Vector store-д хадгалах
                         PineconeVectorStore.from_documents(
                             documents=texts,
                             embedding=embeddings,
@@ -102,10 +95,10 @@ with st.sidebar:
                             pinecone_api_key=pinecone_api_key
                         )
 
-                        st.success(f"✅ {len(texts)} хэсэг (chunk) амжилттай хадгалагдлаа!")
+                        st.success(f"✅ {len(texts)} chunk хадгалагдлаа")
 
                 except Exception as e:
-                    st.error(f"❌ Синк хийхэд алдаа гарлаа: {str(e)}")
+                    st.error(f"❌ Sync алдаа: {str(e)}")
 
 # ==============================
 # 5. CHAT UI
@@ -117,22 +110,19 @@ query = st.text_input("Асуултаа бичнэ үү:")
 if query:
     with st.spinner("🤖 AI бодож байна..."):
         try:
-            # Vector store холбох
             vectorstore = PineconeVectorStore(
                 index_name=index_name,
                 embedding=embeddings,
                 pinecone_api_key=pinecone_api_key
             )
 
-            # Хайлт хийх
             results = vectorstore.similarity_search(query, k=5)
 
             if not results:
-                st.warning("⚠️ Холбогдох мэдээлэл олдсонгүй.")
+                st.warning("⚠️ Мэдээлэл олдсонгүй")
             else:
                 context = "\n\n".join([doc.page_content for doc in results])
 
-                # LLM (Gemini) ажиллуулах
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-1.5-flash",
                     google_api_key=google_api_key,
@@ -140,10 +130,10 @@ if query:
                 )
 
                 prompt = f"""
-Та бол Central Test AI Assistant. 
+Та бол Central Test AI Assistant.
 
-Доорх мэдээлэлд үндэслэн асуултад хариул. 
-Хэрэв мэдээлэл дутуу бол "Мэдээлэл хангалтгүй байна" гэж хэл.
+Доорх мэдээлэлд үндэслэн хариул.
+Хэрэв байхгүй бол: "Мэдээлэл хангалтгүй байна"
 
 --- МЭДЭЭЛЭЛ ---
 {context}
@@ -158,4 +148,4 @@ if query:
                 st.write(response.content)
 
         except Exception as e:
-            st.error(f"❌ Алдаа гарлаа: {str(e)}")
+            st.error(f"❌ Алдаа: {str(e)}")
