@@ -8,12 +8,11 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Найдвартай, хөнгөн Loader-ууд
+# Найдвартай, хөнгөн Loader-ууд (Installing error гаргадаггүй)
 from langchain_community.document_loaders import (
     Docx2txtLoader,
     PyPDFLoader,
-    TextLoader,
-    UnstructuredPowerPointLoader
+    TextLoader
 )
 
 from langchain_core.documents import Document as LCDocument
@@ -27,40 +26,38 @@ from pinecone import Pinecone, ServerlessSpec
 load_dotenv()
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
-# API Keys
-google_api_key = st.secrets.get("GOOGLE_API_KEY", os.getenv("GOOGLE_API_KEY"))
-pinecone_api_key = st.secrets.get("PINECONE_API_KEY", os.getenv("PINECONE_API_KEY"))
-openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+google_api_key = st.secrets.get("GOOGLE_API_KEY")
+pinecone_api_key = st.secrets.get("PINECONE_API_KEY")
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
 
-# Index name (OpenAI text-embedding-3-small = 1536 dimensions)
 index_name = "centralai-v2" 
 
 if not google_api_key or not pinecone_api_key or not openai_api_key:
-    st.error("❌ API keys are missing! Please check Streamlit Secrets.")
+    st.error("❌ API keys are missing in Streamlit Secrets!")
     st.stop()
 
 # ==============================
-# UNICODE SAFE CLEANER
+# UNICODE / ASCII SAFE CLEANER
 # ==============================
 def clean_text(text):
     if not text:
         return ""
-    # Юникод тэмдэгтүүдийг хэвийн болгох (NFKC)
+    # Юникод тэмдэгтүүдийг хэвийн болгох
     text = unicodedata.normalize("NFKC", text)
-    # ASCII алдаа үүсгэдэг тусгай тэмдэгтүүдийг солих
+    # ASCII-д алдаа заадаг тусгай тэмдэгтүүдийг гараар солих
     replacements = {
         '\u2013': '-', '\u2014': '-', 
         '\u2018': "'", '\u2019': "'", 
         '\u201c': '"', '\u201d': '"',
-        '\u00a0': ' '
+        '\u2026': '...', '\u00a0': ' '
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
-    # Монгол үсэг болон стандарт тэмдэгтүүдийг үлдээх
+    # Зөвхөн уншигдах боломжтой тэмдэгтүүдийг үлдээх (Монгол үсэг орно)
     return "".join(c for c in text if unicodedata.category(c)[0] != 'C' or c in '\n\r\t')
 
 # ==============================
-# MODELS
+# MODELS INITIALIZATION
 # ==============================
 @st.cache_resource
 def init_models():
@@ -70,7 +67,7 @@ def init_models():
     )
     pc = Pinecone(api_key=pinecone_api_key)
     
-    # Индекс байхгүй бол үүсгэх (Dimension 1536)
+    # Индекс байхгүй бол үүсгэх (OpenAI-д зориулж 1536 dimension)
     existing_indexes = [i["name"] for i in pc.list_indexes()]
     if index_name not in existing_indexes:
         pc.create_index(
@@ -84,7 +81,7 @@ def init_models():
 embeddings = init_models()
 
 # ==============================
-# DATA LOADING
+# DOCUMENT LOADER
 # ==============================
 def load_all_documents():
     docs = []
@@ -119,21 +116,23 @@ def load_all_documents():
                         docs.append(d)
                         
             except Exception as e:
-                st.warning(f"⚠️ Алдаа ({file}): {str(e)}")
+                st.warning(f"⚠️ Алдаа гарлаа ({file}): {str(e)}")
     return docs
 
 # ==============================
-# SIDEBAR SYNC
+# UI & SYNC
 # ==============================
+st.title("🤖 Central Test AI Assistant")
+
 with st.sidebar:
-    st.header("⚙️ Data Management")
-    if st.button("🔄 Sync Documents to Pinecone"):
-        with st.spinner("Processing..."):
+    st.header("⚙️ Settings")
+    if st.button("🔄 Sync Documents"):
+        with st.spinner("Мэдээллийг боловсруулж байна..."):
             all_docs = load_all_documents()
             if not all_docs:
-                st.error("❌ Файл олдсонгүй.")
+                st.error("❌ 'data' хавтсанд файл олдсонгүй.")
             else:
-                splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=150)
+                splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
                 chunks = splitter.split_documents(all_docs)
                 
                 vectorstore = PineconeVectorStore(
@@ -142,8 +141,8 @@ with st.sidebar:
                     pinecone_api_key=pinecone_api_key
                 )
                 
-                # Batch upload
-                batch_size = 80
+                # Багцаар нь Pinecone-руу илгээх
+                batch_size = 100
                 for i in range(0, len(chunks), batch_size):
                     batch = chunks[i:i+batch_size]
                     vectorstore.add_documents(batch)
@@ -153,8 +152,6 @@ with st.sidebar:
 # ==============================
 # CHAT INTERFACE
 # ==============================
-st.title("🤖 Central Test AI Assistant")
-
 query = st.text_input("Асуултаа бичнэ үү:", placeholder="Мэдээллийн сангаас хайх...")
 
 if query:
@@ -166,13 +163,13 @@ if query:
                 pinecone_api_key=pinecone_api_key
             )
             
-            # Semantic search
-            search_results = vectorstore.similarity_search(query, k=5)
+            # Хамгийн ойр 5 илэрцийг хайх
+            results = vectorstore.similarity_search(query, k=5)
             
-            if not search_results:
+            if not results:
                 st.warning("⚠️ Холбогдох мэдээлэл олдсонгүй.")
             else:
-                context_text = "\n\n".join([doc.page_content for doc in search_results])
+                context_text = "\n\n".join([doc.page_content for doc in results])
                 
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-1.5-flash",
@@ -181,13 +178,11 @@ if query:
                 )
                 
                 prompt = f"""
-                Та бол Central Test компанийн туслах AI байна. 
-                Доорх мэдээлэлд (Context) тулгуурлан асуултанд монгол хэлээр маш тодорхой хариул.
-                Хариулт мэдээлэл дотор байхгүй бол 'Мэдээлэл алга байна' гэж хэлнэ үү.
+                Та бол Central Test компанийн туслах AI. 
+                Доорх мэдээлэлд тулгуурлан асуултанд монгол хэлээр маш тодорхой хариул.
+                Хариулт байхгүй бол 'Мэдээлэл алга байна' гэж хэлээрэй.
 
-                Мэдээлэл:
-                {context_text}
-
+                Мэдээлэл: {context_text}
                 Асуулт: {query}
                 """
                 
@@ -196,8 +191,8 @@ if query:
                 st.write(response.content)
                 
                 with st.expander("Эх сурвалж харах"):
-                    for doc in search_results:
-                        st.info(f"Source: {doc.metadata.get('source')}\n\n{doc.page_content}")
+                    for doc in results:
+                        st.info(f"File: {doc.metadata.get('source')}\n\n{doc.page_content}")
         
         except Exception as e:
-            st.error(f"❌ Алдаа: {str(e)}")
+            st.error(f"❌ Алдаа гарлаа: {str(e)}")
