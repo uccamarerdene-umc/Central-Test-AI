@@ -1,11 +1,12 @@
 streamlit
 python-dotenv
-
 langchain==0.2.0
 langchain-community==0.2.0
 langchain-openai
 langchain-google-genai
 langchain-pinecone
-
 docx2txt
+pypdf
+python-pptx
+unstructured
 pinecone-client
