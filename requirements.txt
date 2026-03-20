@@ -4,9 +4,9 @@ langchain-community
 langchain-core
 langchain-openai
 langchain-google-genai
-langchain-pinecone
+langchain-pinecone==0.1.1
 langchain-text-splitters
-pinecone-client
+pinecone-client==4.1.0
 python-dotenv
 docx2txt
 pypdf
