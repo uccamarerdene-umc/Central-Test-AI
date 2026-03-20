@@ -9,19 +9,20 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langchain_community.document_loaders import (
-    Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
-    UnstructuredPowerPointLoader,
-    DirectoryLoader
+    UnstructuredPowerPointLoader
 )
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
+from docx import Document
+from langchain.schema import Document as LCDocument
+
 # ==============================
-# 1. ENV
+# ENV
 # ==============================
 load_dotenv()
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
@@ -31,53 +32,61 @@ pinecone_api_key = st.secrets.get("PINECONE_API_KEY", os.getenv("PINECONE_API_KE
 openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
 index_name = "centralai-embed-3-small"
-dimension = 1536
-
-if not google_api_key or not pinecone_api_key or not openai_api_key:
-    st.error("❌ API түлхүүр дутуу байна!")
-    st.stop()
 
 # ==============================
-# 2. TEXT CLEAN (🔥 FULL SAFE)
+# TEXT CLEAN
 # ==============================
 def clean_text(text):
     if not isinstance(text, str):
         return str(text)
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("—", "-")
-    text = text.encode("utf-8", "ignore").decode("utf-8")
     return text
 
 # ==============================
-# 3. LOAD FILES
+# SAFE DOCX LOADER (🔥 KEY FIX)
+# ==============================
+def load_docx_safe(file_path):
+    doc = Document(file_path)
+    text = "\n".join([p.text for p in doc.paragraphs])
+
+    text = clean_text(text)
+
+    return LCDocument(
+        page_content=text,
+        metadata={"source": file_path}
+    )
+
+# ==============================
+# LOAD FILES (🔥 FULL SAFE)
 # ==============================
 def load_all_documents():
     docs = []
 
-    loaders = [
-        ("data", "**/*.docx", Docx2txtLoader),
-        ("data", "**/*.pdf", PyPDFLoader),
-        ("data", "**/*.txt", TextLoader),
-        ("data", "**/*.pptx", UnstructuredPowerPointLoader),
-    ]
+    for root, _, files in os.walk("data"):
+        for file in files:
+            path = os.path.join(root, file)
 
-    for path, pattern, loader_cls in loaders:
-        if os.path.exists(path):
             try:
-                loader = DirectoryLoader(
-                    path,
-                    glob=pattern,
-                    loader_cls=loader_cls,
-                    show_progress=True
-                )
-                docs.extend(loader.load())
+                if file.endswith(".docx"):
+                    docs.append(load_docx_safe(path))
+
+                elif file.endswith(".pdf"):
+                    docs.extend(PyPDFLoader(path).load())
+
+                elif file.endswith(".txt"):
+                    docs.extend(TextLoader(path, encoding="utf-8").load())
+
+                elif file.endswith(".pptx"):
+                    docs.extend(UnstructuredPowerPointLoader(path).load())
+
             except Exception as e:
-                st.warning(f"⚠️ Loader алдаа ({pattern}): {e}")
+                st.warning(f"⚠️ Алдаа ({file}): {e}")
 
     return docs
 
 # ==============================
-# 4. MODELS
+# MODELS
 # ==============================
 @st.cache_resource
 def load_models():
@@ -92,7 +101,7 @@ def load_models():
     if index_name not in existing_indexes:
         pc.create_index(
             name=index_name,
-            dimension=dimension,
+            dimension=1536,
             metric="cosine",
             spec=ServerlessSpec(cloud="aws", region="us-east-1")
         )
@@ -102,7 +111,7 @@ def load_models():
 embeddings = load_models()
 
 # ==============================
-# 5. SYNC (🔥 FIXED)
+# SYNC (🔥 FINAL SAFE)
 # ==============================
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -115,61 +124,47 @@ with st.sidebar:
                 try:
                     docs = load_all_documents()
 
-                    if not docs:
-                        st.warning("⚠️ файл олдсонгүй")
-                    else:
-                        splitter = RecursiveCharacterTextSplitter(
-                            chunk_size=500,
-                            chunk_overlap=120,
-                            separators=["\n\n", "\n", ".", "!", "?", " "]
-                        )
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=500,
+                        chunk_overlap=120
+                    )
 
-                        texts = splitter.split_documents(docs)
+                    texts = splitter.split_documents(docs)
 
-                        vectorstore = PineconeVectorStore(
-                            index_name=index_name,
-                            embedding=embeddings,
-                            pinecone_api_key=pinecone_api_key
-                        )
+                    vectorstore = PineconeVectorStore(
+                        index_name=index_name,
+                        embedding=embeddings,
+                        pinecone_api_key=pinecone_api_key
+                    )
 
-                        safe_texts = []
-                        metadatas = []
-                        ids = []
+                    safe_texts = []
+                    metadatas = []
+                    ids = []
 
-                        for doc in texts:
-                            content = clean_text(doc.page_content)
+                    for doc in texts:
+                        content = clean_text(doc.page_content)
 
-                            # 🔥 ASCII SAFE
-                            content = content.encode("ascii", "ignore").decode()
+                        meta = {
+                            "source": clean_text(doc.metadata.get("source", "unknown"))
+                        }
 
-                            meta = {}
-                            if doc.metadata:
-                                for k, v in doc.metadata.items():
-                                    meta[clean_text(k)] = clean_text(v)
+                        safe_texts.append(content)
+                        metadatas.append(meta)
+                        ids.append(str(uuid4()))
 
-                            safe_texts.append(content)
-                            metadatas.append(meta)
-                            ids.append(str(uuid4()))
+                    vectorstore.add_texts(
+                        texts=safe_texts,
+                        metadatas=metadatas,
+                        ids=ids
+                    )
 
-                        vectorstore.add_texts(
-                            texts=safe_texts,
-                            metadatas=metadatas,
-                            ids=ids
-                        )
-
-                        st.success(f"✅ {len(safe_texts)} chunk хадгалагдлаа")
+                    st.success(f"✅ {len(safe_texts)} chunk хадгалагдлаа")
 
                 except Exception as e:
                     st.error(f"❌ Sync алдаа: {str(e)}")
 
 # ==============================
-# 6. QUERY
-# ==============================
-def enhance_query(query):
-    return f"Монгол хэл дээр ойлгомжтой хайлт: {query}"
-
-# ==============================
-# 7. CHAT
+# CHAT
 # ==============================
 st.title("🤖 Central Test AI Assistant")
 
@@ -184,41 +179,29 @@ if query:
                 pinecone_api_key=pinecone_api_key
             )
 
-            results = vectorstore.similarity_search(enhance_query(query), k=5)
+            results = vectorstore.similarity_search(query, k=5)
 
-            if not results:
-                st.warning("⚠️ Мэдээлэл олдсонгүй")
-            else:
-                context = "\n\n".join([
-                    clean_text(doc.page_content[:1000])
-                    for doc in results
-                ])
+            context = "\n\n".join([
+                clean_text(doc.page_content[:1000])
+                for doc in results
+            ])
 
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
-                    google_api_key=google_api_key,
-                    temperature=0.2
-                )
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                google_api_key=google_api_key,
+                temperature=0.2
+            )
 
-                prompt = f"""
-Та бол Central Test AI Assistant.
+            response = llm.invoke(f"""
+Доорх мэдээлэлд үндэслэн хариул:
 
-Зөвхөн өгөгдсөн мэдээлэлд үндэслэн хариул.
-
-Хэрэв мэдээлэл байхгүй бол:
-"Мэдээлэл хангалтгүй байна"
-
---- МЭДЭЭЛЭЛ ---
 {context}
 
---- АСУУЛТ ---
-{query}
-"""
+Асуулт: {query}
+""")
 
-                response = llm.invoke(prompt)
-
-                st.markdown("### 🤖 Хариулт:")
-                st.write(response.content)
+            st.markdown("### 🤖 Хариулт:")
+            st.write(response.content)
 
         except Exception as e:
             st.error(f"❌ Алдаа: {str(e)}")
