@@ -9,17 +9,16 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langchain_community.document_loaders import (
+    Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
     UnstructuredPowerPointLoader
 )
 
+from langchain.schema import Document as LCDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
-
-from docx import Document
-from langchain.schema import Document as LCDocument
 
 # ==============================
 # ENV
@@ -33,32 +32,49 @@ openai_api_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
 index_name = "centralai-embed-3-small"
 
+if not google_api_key or not pinecone_api_key or not openai_api_key:
+    st.error("❌ API түлхүүр дутуу байна!")
+    st.stop()
+
 # ==============================
-# TEXT CLEAN
+# CLEAN TEXT
 # ==============================
 def clean_text(text):
     if not isinstance(text, str):
         return str(text)
+
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("—", "-")
+
     return text
 
 # ==============================
 # SAFE DOCX LOADER (🔥 KEY FIX)
 # ==============================
 def load_docx_safe(file_path):
-    doc = Document(file_path)
-    text = "\n".join([p.text for p in doc.paragraphs])
+    try:
+        loader = Docx2txtLoader(file_path)
+        docs = loader.load()
 
-    text = clean_text(text)
+        safe_docs = []
+        for d in docs:
+            text = clean_text(d.page_content)
 
-    return LCDocument(
-        page_content=text,
-        metadata={"source": file_path}
-    )
+            safe_docs.append(
+                LCDocument(
+                    page_content=text,
+                    metadata={"source": file_path}
+                )
+            )
+
+        return safe_docs
+
+    except Exception as e:
+        st.warning(f"⚠️ DOCX алдаа: {file_path} → {e}")
+        return []
 
 # ==============================
-# LOAD FILES (🔥 FULL SAFE)
+# LOAD FILES
 # ==============================
 def load_all_documents():
     docs = []
@@ -69,7 +85,7 @@ def load_all_documents():
 
             try:
                 if file.endswith(".docx"):
-                    docs.append(load_docx_safe(path))
+                    docs.extend(load_docx_safe(path))
 
                 elif file.endswith(".pdf"):
                     docs.extend(PyPDFLoader(path).load())
@@ -111,7 +127,7 @@ def load_models():
 embeddings = load_models()
 
 # ==============================
-# SYNC (🔥 FINAL SAFE)
+# SYNC
 # ==============================
 with st.sidebar:
     st.header("⚙️ Settings")
@@ -181,18 +197,21 @@ if query:
 
             results = vectorstore.similarity_search(query, k=5)
 
-            context = "\n\n".join([
-                clean_text(doc.page_content[:1000])
-                for doc in results
-            ])
+            if not results:
+                st.warning("⚠️ Мэдээлэл олдсонгүй")
+            else:
+                context = "\n\n".join([
+                    clean_text(doc.page_content[:1000])
+                    for doc in results
+                ])
 
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=google_api_key,
-                temperature=0.2
-            )
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    google_api_key=google_api_key,
+                    temperature=0.2
+                )
 
-            response = llm.invoke(f"""
+                response = llm.invoke(f"""
 Доорх мэдээлэлд үндэслэн хариул:
 
 {context}
@@ -200,8 +219,8 @@ if query:
 Асуулт: {query}
 """)
 
-            st.markdown("### 🤖 Хариулт:")
-            st.write(response.content)
+                st.markdown("### 🤖 Хариулт:")
+                st.write(response.content)
 
         except Exception as e:
             st.error(f"❌ Алдаа: {str(e)}")
