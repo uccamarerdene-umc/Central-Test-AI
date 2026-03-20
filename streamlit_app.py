@@ -17,12 +17,13 @@ from pinecone import Pinecone, ServerlessSpec
 # ==============================
 # API KEY SAFETY CLEANER
 # ==============================
-def get_safe_secret(key):
-    """API Key-д байж болох Unicode тэмдэгтүүдийг цэвэрлэж ASCII болгоно."""
-    val = st.secrets.get(key)
+def get_safe_secret(key_name):
+    """Secrets-ээс нэрээр нь дуудаж, Unicode алдааг цэвэрлэнэ."""
+    val = st.secrets.get(key_name)
     if val:
-        # Аливаа үл үзэгдэх Unicode тэмдэгт, зайг устгаж ASCII болгох
-        return str(val).encode("ascii", "ignore").decode("ascii").strip()
+        # Unicode зураас болон илүү зайг цэвэрлэх
+        val = str(val).replace('—', '-').strip()
+        return val.encode("ascii", "ignore").decode("ascii")
     return None
 
 # ==============================
@@ -31,17 +32,15 @@ def get_safe_secret(key):
 load_dotenv()
 st.set_page_config(page_title="Central Test AI Assistant", page_icon="🤖")
 
-# API түлхүүрүүдийг аюулгүйгээр авах
-google_api_key = get_safe_secret("pcsk_65ZC2g_4k2eyNb9EAaAQ4g3rfFdHFKqbTDmKRGMxfgTV5NLLjaTYBFiK154icTn4ggGXaM ")
-pinecone_api_key = get_safe_secret("pcsk_j4q1W_HiF9S5VcCgEQ2tN47YhdBuAjMjWeKYMSoXG2WXMtaka1UTcnjw2nmHnW1weVwKB ")
-openai_api_key = get_safe_secret("sk-proj—G3gvVpcPGTRn7VrLeuTgEbw6N6MT0Ub7KX_ur6jyFwRWPuGInbEdLeSz3e_lr0FibBdBGjmm3T3BlbkFJNCfw0AdCpuIpF4x7CJIl77yYDPIKsT8eKO27jMKkTLQek87G3b4Jf693rKhmdwezOkB2ECjUYA 
-
- ")
+# АНХААР: Энд API Key-г шууд бичиж болохгүй! Зөвхөн Secrets дэх нэрийг нь бичнэ.
+google_api_key = get_safe_secret("GOOGLE_API_KEY")
+pinecone_api_key = get_safe_secret("PINECONE_API_KEY")
+openai_api_key = get_safe_secret("OPENAI_API_KEY")
 
 index_name = "centralai-v2" 
 
 if not google_api_key or not pinecone_api_key or not openai_api_key:
-    st.error("❌ API keys are missing in Streamlit Secrets! Secrets хэсгээ шалгана уу.")
+    st.error("❌ API Keys missing! Streamlit Cloud-ийн Settings -> Secrets хэсэгт түлхүүрүүдээ оруулна уу.")
     st.stop()
 
 # ==============================
@@ -50,9 +49,7 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
 def clean_text(text):
     if not text:
         return ""
-    # Юникод тэмдэгтүүдийг хэвийн болгох (Монгол үсэгт асуудалгүй)
     text = unicodedata.normalize("NFKC", text)
-    # ASCII-д алдаа заадаг тусгай тэмдэгтүүдийг гараар солих
     replacements = {
         '\u2013': '-', '\u2014': '-', 
         '\u2018': "'", '\u2019': "'", 
@@ -68,16 +65,11 @@ def clean_text(text):
 # ==============================
 @st.cache_resource
 def init_models():
-    # OpenAI Embedding
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
         openai_api_key=openai_api_key
     )
-    
-    # Pinecone Client
     pc = Pinecone(api_key=pinecone_api_key)
-    
-    # Индекс байгаа эсэхийг шалгах, байхгүй бол үүсгэх
     try:
         existing_indexes = [i["name"] for i in pc.list_indexes()]
         if index_name not in existing_indexes:
@@ -88,8 +80,7 @@ def init_models():
                 spec=ServerlessSpec(cloud="aws", region="us-east-1")
             )
     except Exception as e:
-        st.error(f"Pinecone Index Error: {str(e)}")
-        
+        st.error(f"Pinecone Error: {str(e)}")
     return embeddings
 
 embeddings = init_models()
@@ -102,34 +93,25 @@ def load_all_documents():
     data_dir = "data"
     if not os.path.exists(data_dir):
         return docs
-
     for root, _, files in os.walk(data_dir):
         for file in files:
             path = os.path.join(root, file)
             try:
                 if file.endswith(".docx"):
                     loader = Docx2txtLoader(path)
-                    raw_docs = loader.load()
-                    for d in raw_docs:
-                        content = clean_text(d.page_content)
-                        if content.strip():
-                            docs.append(LCDocument(page_content=content, metadata={"source": file}))
-                
                 elif file.endswith(".pdf"):
                     loader = PyPDFLoader(path)
-                    raw_docs = loader.load()
-                    for d in raw_docs:
-                        d.page_content = clean_text(d.page_content)
-                        docs.append(d)
-                
                 elif file.endswith(".txt"):
                     loader = TextLoader(path, encoding="utf-8")
-                    raw_docs = loader.load()
-                    for d in raw_docs:
-                        d.page_content = clean_text(d.page_content)
-                        docs.append(d)
+                else:
+                    continue
+                raw_docs = loader.load()
+                for d in raw_docs:
+                    content = clean_text(d.page_content)
+                    if content.strip():
+                        docs.append(LCDocument(page_content=content, metadata={"source": file}))
             except Exception as e:
-                st.warning(f"⚠️ Алдаа гарлаа ({file}): {str(e)}")
+                st.warning(f"⚠️ Load error ({file}): {str(e)}")
     return docs
 
 # ==============================
@@ -138,72 +120,44 @@ def load_all_documents():
 st.title("🤖 Central Test AI Assistant")
 
 with st.sidebar:
-    st.header("⚙️ Settings")
     if st.button("🔄 Sync Documents"):
-        with st.spinner("Мэдээллийг боловсруулж байна..."):
+        with st.spinner("Processing..."):
             all_docs = load_all_documents()
             if not all_docs:
-                st.error("❌ 'data' хавтсанд файл олдсонгүй.")
+                st.error("❌ 'data' хавтсанд файл алга.")
             else:
-                splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=150)
+                splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
                 chunks = splitter.split_documents(all_docs)
-                
                 try:
-                    # Pinecone-д холбогдох
-                    vectorstore = PineconeVectorStore(
+                    vectorstore = PineconeVectorStore.from_documents(
+                        chunks, 
+                        embeddings, 
                         index_name=index_name,
-                        embedding=embeddings,
                         pinecone_api_key=pinecone_api_key
                     )
-                    
-                    # Датаг Pinecone руу оруулах
-                    vectorstore.add_documents(chunks)
-                    st.success(f"✅ Амжилттай! {len(chunks)} хэсэг мэдээлэл хадгалагдлаа.")
+                    st.success("✅ Амжилттай хадгалагдлаа!")
                 except Exception as e:
                     st.error(f"Sync Error: {str(e)}")
 
 # ==============================
 # CHAT INTERFACE
 # ==============================
-query = st.text_input("Асуултаа бичнэ үү:", placeholder="Мэдээллийн сангаас хайх...")
+query = st.text_input("Асуултаа бичнэ үү:")
 
 if query:
-    with st.spinner("AI хариулт бэлдэж байна..."):
+    with st.spinner("Searching..."):
         try:
             vectorstore = PineconeVectorStore(
                 index_name=index_name,
                 embedding=embeddings,
                 pinecone_api_key=pinecone_api_key
             )
-            
             results = vectorstore.similarity_search(query, k=5)
-            
-            if not results:
-                st.warning("⚠️ Холбогдох мэдээлэл олдсонгүй.")
-            else:
-                context_text = "\n\n".join([doc.page_content for doc in results])
-                
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
-                    google_api_key=google_api_key,
-                    temperature=0.1
-                )
-                
-                prompt = f"""
-                Та бол Central Test компанийн туслах AI. 
-                Доорх мэдээлэлд тулгуурлан асуултанд монгол хэлээр маш тодорхой хариул.
-                Хариулт байхгүй бол 'Мэдээлэл алга байна' гэж хэлээрэй.
-
-                Мэдээлэл: {context_text}
-                Асуулт: {query}
-                """
-                
+            if results:
+                context = "\n\n".join([doc.page_content for doc in results])
+                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=google_api_key)
+                prompt = f"Дараах мэдээлэлд тулгуурлан хариул: {context}\n\nАсуулт: {query}"
                 response = llm.invoke(prompt)
-                st.markdown("### 🤖 Хариулт:")
                 st.write(response.content)
-                
-                with st.expander("Эх сурвалж харах"):
-                    for doc in results:
-                        st.info(f"File: {doc.metadata.get('source')}\n\n{doc.page_content}")
         except Exception as e:
-            st.error(f"❌ Алдаа гарлаа: {str(e)}")
+            st.error(f"Chat Error: {str(e)}")
