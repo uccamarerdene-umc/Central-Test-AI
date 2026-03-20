@@ -7,3 +7,6 @@ openai
 pinecone-client
 docx2txt
 python-dotenv
+unstructured
+python-magic-bin  # Windows/Mac дээр хэрэг болдог
+libmagic
