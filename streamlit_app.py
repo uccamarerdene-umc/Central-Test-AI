@@ -10,6 +10,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langchain_community.document_loaders import (
+    Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
     UnstructuredPowerPointLoader
@@ -19,9 +20,6 @@ from langchain.schema import Document as LCDocument
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
-
-# 🔥 DOCX SAFE
-from docx import Document
 
 # ==============================
 # ENV
@@ -66,21 +64,39 @@ def clean_text(text):
     return text
 
 # ==============================
-# SAFE DOCX LOADER (🔥 FIXED)
+# SAFE DOCX LOADER (NO CRASH)
 # ==============================
 def load_docx_safe(file_path):
     try:
-        doc = Document(file_path)
-        text = "\n".join([p.text for p in doc.paragraphs])
+        loader = Docx2txtLoader(file_path)
 
-        return [
-            LCDocument(
-                page_content=clean_text(text),
-                metadata={"source": file_path}
-            )
-        ]
-    except Exception as e:
-        st.warning(f"⚠️ DOCX алдаа: {file_path} → {e}")
+        # 🔥 CRASH хамгаалалт
+        try:
+            docs = loader.load()
+        except Exception:
+            return []
+
+        safe_docs = []
+
+        for d in docs:
+            text = d.page_content
+
+            # 🔥 UTF-8 FORCE (KEY FIX)
+            text = text.encode("utf-8", errors="ignore").decode("utf-8")
+
+            text = clean_text(text)
+
+            if text.strip():
+                safe_docs.append(
+                    LCDocument(
+                        page_content=text,
+                        metadata={"source": clean_text(file_path)}
+                    )
+                )
+
+        return safe_docs
+
+    except Exception:
         return []
 
 # ==============================
@@ -162,47 +178,51 @@ with st.sidebar:
                 try:
                     docs = load_all_documents()
 
-                    splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=500,
-                        chunk_overlap=120
-                    )
+                    if not docs:
+                        st.warning("⚠️ файл олдсонгүй")
+                    else:
+                        splitter = RecursiveCharacterTextSplitter(
+                            chunk_size=500,
+                            chunk_overlap=120
+                        )
 
-                    texts = splitter.split_documents(docs)
+                        texts = splitter.split_documents(docs)
 
-                    vectorstore = PineconeVectorStore(
-                        index_name=index_name,
-                        embedding=embeddings,
-                        pinecone_api_key=pinecone_api_key
-                    )
+                        vectorstore = PineconeVectorStore(
+                            index_name=index_name,
+                            embedding=embeddings,
+                            pinecone_api_key=pinecone_api_key
+                        )
 
-                    batch_size = 100
+                        batch_size = 100
 
-                    for i in range(0, len(texts), batch_size):
-                        batch = texts[i:i+batch_size]
+                        for i in range(0, len(texts), batch_size):
+                            batch = texts[i:i+batch_size]
 
-                        contents = []
-                        metas = []
-                        ids = []
+                            contents = []
+                            metas = []
+                            ids = []
 
-                        for doc in batch:
-                            content = clean_text(doc.page_content)
-                            if not content.strip():
-                                continue
+                            for doc in batch:
+                                content = clean_text(doc.page_content)
 
-                            contents.append(content)
-                            metas.append({
-                                "source": clean_text(doc.metadata.get("source", "unknown"))
-                            })
-                            ids.append(str(uuid4()))
+                                if not content.strip():
+                                    continue
 
-                        if contents:
-                            vectorstore.add_texts(
-                                texts=contents,
-                                metadatas=metas,
-                                ids=ids
-                            )
+                                contents.append(content)
+                                metas.append({
+                                    "source": clean_text(doc.metadata.get("source", "unknown"))
+                                })
+                                ids.append(str(uuid4()))
 
-                    st.success(f"✅ {len(texts)} chunk хадгалагдлаа")
+                            if contents:
+                                vectorstore.add_texts(
+                                    texts=contents,
+                                    metadatas=metas,
+                                    ids=ids
+                                )
+
+                        st.success(f"✅ {len(texts)} chunk хадгалагдлаа")
 
                 except Exception as e:
                     st.error(f"❌ Sync алдаа: {str(e)}")
