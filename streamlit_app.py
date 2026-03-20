@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# 🔥 MULTI FILE LOADER
 from langchain_community.document_loaders import (
     Docx2txtLoader,
     PyPDFLoader,
@@ -16,9 +15,7 @@ from langchain_community.document_loaders import (
     DirectoryLoader
 )
 
-# ✅ STABLE SPLITTER (NO SPACY)
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
@@ -40,10 +37,13 @@ if not google_api_key or not pinecone_api_key or not openai_api_key:
     st.stop()
 
 # ==============================
-# 2. TEXT CLEAN (🔥 MONGOLIAN SAFE)
+# 2. TEXT CLEAN (🔥 FULL SAFE)
 # ==============================
 def clean_text(text):
+    if not isinstance(text, str):
+        return text
     text = unicodedata.normalize("NFKC", text)
+    text = text.replace("—", "-")  # 🔥 fix em dash
     return text.encode("utf-8", "ignore").decode("utf-8")
 
 # ==============================
@@ -61,13 +61,16 @@ def load_all_documents():
 
     for path, pattern, loader_cls in loaders:
         if os.path.exists(path):
-            loader = DirectoryLoader(
-                path,
-                glob=pattern,
-                loader_cls=loader_cls,
-                show_progress=True
-            )
-            docs.extend(loader.load())
+            try:
+                loader = DirectoryLoader(
+                    path,
+                    glob=pattern,
+                    loader_cls=loader_cls,
+                    show_progress=True
+                )
+                docs.extend(loader.load())
+            except Exception as e:
+                st.warning(f"⚠️ Loader алдаа ({pattern}): {e}")
 
     return docs
 
@@ -116,7 +119,6 @@ with st.sidebar:
                     if not docs:
                         st.warning("⚠️ файл олдсонгүй")
                     else:
-                        # 🔥 Монгол optimized chunking
                         splitter = RecursiveCharacterTextSplitter(
                             chunk_size=500,
                             chunk_overlap=120,
@@ -125,9 +127,17 @@ with st.sidebar:
 
                         texts = splitter.split_documents(docs)
 
-                        # 🔥 CLEAN TEXT
+                        # 🔥 FULL CLEAN (CONTENT + METADATA)
                         for doc in texts:
+                            # content
                             doc.page_content = clean_text(doc.page_content)
+
+                            # metadata (🔥 ЭНЭ Л АСУУДЛЫН ГОЛ)
+                            if doc.metadata:
+                                new_meta = {}
+                                for k, v in doc.metadata.items():
+                                    new_meta[clean_text(k)] = clean_text(v)
+                                doc.metadata = new_meta
 
                         PineconeVectorStore.from_documents(
                             documents=texts,
@@ -145,11 +155,7 @@ with st.sidebar:
 # 6. QUERY OPTIMIZATION
 # ==============================
 def enhance_query(query):
-    return f"""
-Дараах асуултыг ойлгомжтой утгаар хайлт хийхэд ашиглана:
-
-{query}
-"""
+    return f"Монгол хэл дээр ойлгомжтой хайлтын асуулт: {query}"
 
 # ==============================
 # 7. CHAT UI
@@ -167,15 +173,13 @@ if query:
                 pinecone_api_key=pinecone_api_key
             )
 
-            enhanced_query = enhance_query(query)
-
-            results = vectorstore.similarity_search(enhanced_query, k=5)
+            results = vectorstore.similarity_search(enhance_query(query), k=5)
 
             if not results:
                 st.warning("⚠️ Мэдээлэл олдсонгүй")
             else:
                 context = "\n\n".join([
-                    doc.page_content[:1000]
+                    clean_text(doc.page_content[:1000])
                     for doc in results
                 ])
 
@@ -191,7 +195,7 @@ if query:
 Та зөвхөн өгөгдсөн мэдээлэлд үндэслэн Монгол хэл дээр товч, тодорхой хариул.
 
 Хэрэв мэдээлэл байхгүй бол:
-"Мэдээлэл хангалтгүй байна" гэж хариул.
+"Мэдээлэл хангалтгүй байна"
 
 --- МЭДЭЭЛЭЛ ---
 {context}
