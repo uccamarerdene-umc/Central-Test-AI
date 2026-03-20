@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.document_loaders import UnstructuredWordDocumentLoader, DirectoryLoader
+from langchain_community.document_loaders import Docx2txtLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 
@@ -76,11 +76,11 @@ with st.sidebar:
         else:
             with st.spinner("📤 Pinecone-д өгөгдөл илгээж байна..."):
                 try:
-                    # Уншигч (Loader) тохируулах
+                    # Уншигч (Loader) - Docx2txt ашигласан нь хамгийн тогтвортой
                     loader = DirectoryLoader(
                         "data",
                         glob="**/*.docx",
-                        loader_cls=UnstructuredWordDocumentLoader
+                        loader_cls=Docx2txtLoader
                     )
                     docs = loader.load()
 
@@ -140,9 +140,9 @@ if query:
                 )
 
                 prompt = f"""
-Та бол Central Test AI Assistant.
+Та бол Central Test AI Assistant. 
 
-Доорх мэдээлэлд үндэслэн асуултад хариул.
+Доорх мэдээлэлд үндэслэн асуултад хариул. 
 Хэрэв мэдээлэл дутуу бол "Мэдээлэл хангалтгүй байна" гэж хэл.
 
 --- МЭДЭЭЛЭЛ ---
