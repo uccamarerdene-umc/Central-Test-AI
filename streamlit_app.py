@@ -4,10 +4,9 @@ import os
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.document_loaders import UnstructuredWordDocumentLoader
+from langchain_community.document_loaders import UnstructuredWordDocumentLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
-from langchain_community.document_loaders import UnstructuredWordDocumentLoader, DirectoryLoader
 
 from pinecone import Pinecone, ServerlessSpec
 
@@ -31,7 +30,6 @@ dimension = 1536  # embedding хэмжээ
 # ==============================
 # 2. CHECK API KEYS
 # ==============================
-# Google (Gemini) + OpenAI embeddings + Pinecone шаардлагатай.
 if not google_api_key or not pinecone_api_key or not openai_api_key:
     st.error("❌ API түлхүүрүүд тохируулагдаагүй байна! (GOOGLE_API_KEY, OPENAI_API_KEY, PINECONE_API_KEY шалгана уу)")
     st.stop()
@@ -50,7 +48,8 @@ def load_models():
     pc = Pinecone(api_key=pinecone_api_key)
 
     # Index байгаа эсэх шалгах
-    if index_name not in [i["name"] for i in pc.list_indexes()]:
+    existing_indexes = [i["name"] for i in pc.list_indexes()]
+    if index_name not in existing_indexes:
         pc.create_index(
             name=index_name,
             dimension=dimension,
@@ -73,41 +72,40 @@ with st.sidebar:
 
     if st.button("🔄 Sync Data to Pinecone"):
         if not os.path.exists("data"):
-            st.error("❌ 'Data' хавтас олдсонгүй!")
+            st.error("❌ 'data' хавтас олдсонгүй!")
         else:
             with st.spinner("📤 Pinecone-д өгөгдөл илгээж байна..."):
                 try:
+                    # Уншигч (Loader) тохируулах
                     loader = DirectoryLoader(
-    "data",
-    glob="**/*.docx",
-    loader_cls=UnstructuredWordDocumentLoader
-)
-docs = loader.load()
+                        "data",
+                        glob="**/*.docx",
+                        loader_cls=UnstructuredWordDocumentLoader
                     )
                     docs = loader.load()
 
                     if not docs:
                         st.warning("⚠️ .docx файл олдсонгүй.")
                     else:
-                        # Chunking
+                        # Текст хуваагч (Chunking)
                         splitter = RecursiveCharacterTextSplitter(
                             chunk_size=800,
                             chunk_overlap=150
                         )
                         texts = splitter.split_documents(docs)
 
-                        # Vector store
-                        vectorstore = PineconeVectorStore.from_documents(
+                        # Vector store-д хадгалах
+                        PineconeVectorStore.from_documents(
                             documents=texts,
                             embedding=embeddings,
                             index_name=index_name,
                             pinecone_api_key=pinecone_api_key
                         )
 
-                        st.success(f"✅ {len(texts)} chunk амжилттай хадгалагдлаа!")
+                        st.success(f"✅ {len(texts)} хэсэг (chunk) амжилттай хадгалагдлаа!")
 
                 except Exception as e:
-                    st.error(f"❌ Sync failed: {str(e)}")
+                    st.error(f"❌ Синк хийхэд алдаа гарлаа: {str(e)}")
 
 # ==============================
 # 5. CHAT UI
@@ -119,30 +117,29 @@ query = st.text_input("Асуултаа бичнэ үү:")
 if query:
     with st.spinner("🤖 AI бодож байна..."):
         try:
-            # Vector store load
+            # Vector store холбох
             vectorstore = PineconeVectorStore(
                 index_name=index_name,
                 embedding=embeddings,
                 pinecone_api_key=pinecone_api_key
             )
 
-            # Search
+            # Хайлт хийх
             results = vectorstore.similarity_search(query, k=5)
 
             if not results:
                 st.warning("⚠️ Холбогдох мэдээлэл олдсонгүй.")
-                st.stop()
+            else:
+                context = "\n\n".join([doc.page_content for doc in results])
 
-            context = "\n\n".join([doc.page_content for doc in results])
+                # LLM (Gemini) ажиллуулах
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    google_api_key=google_api_key,
+                    temperature=0.2
+                )
 
-            # LLM
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                google_api_key=google_api_key,
-                temperature=0.2
-            )
-
-            prompt = f"""
+                prompt = f"""
 Та бол Central Test AI Assistant.
 
 Доорх мэдээлэлд үндэслэн асуултад хариул.
@@ -155,10 +152,10 @@ if query:
 {query}
 """
 
-            response = llm.invoke(prompt)
+                response = llm.invoke(prompt)
 
-            st.markdown("### 🤖 Хариулт:")
-            st.write(response.content)
+                st.markdown("### 🤖 Хариулт:")
+                st.write(response.content)
 
         except Exception as e:
             st.error(f"❌ Алдаа гарлаа: {str(e)}")
