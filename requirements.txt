@@ -1,11 +1,12 @@
 streamlit
 langchain
 langchain-community
+langchain-core
 langchain-openai
 langchain-google-genai
 langchain-pinecone
 pinecone-client
 python-dotenv
-unstructured
+unstructured[docx]
 python-docx
 docx2txt
